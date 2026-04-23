@@ -1,3 +1,6 @@
 /netbrother
+/netbrother-bpf
+/netbrother-pcap
+/netbrother-static
 cmd/netbrother/netbrother
 internal/capture/bpf/vmlinux.h
