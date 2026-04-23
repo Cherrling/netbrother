@@ -67,18 +67,20 @@ type tuiDisplayer struct {
 	scroll int
 
 	// options
-	keep bool // keep closed connections visible
+	keep         bool // keep closed connections visible
+	showTimeWait bool // show TIME_WAIT connections
 }
 
 func newTUDisplay(cfg Config) (*tuiDisplayer, error) {
 	w, h := getTermSize()
 	return &tuiDisplayer{
-		maxAlerts:  100,
-		maxConns:   500,
-		done:       make(chan struct{}),
-		termWidth:  w,
-		termHeight: h,
-		keep:       cfg.Keep,
+		maxAlerts:    100,
+		maxConns:     500,
+		done:         make(chan struct{}),
+		termWidth:    w,
+		termHeight:   h,
+		keep:         cfg.Keep,
+		showTimeWait: cfg.ShowTimeWait,
 	}, nil
 }
 
@@ -256,6 +258,11 @@ func (t *tuiDisplayer) handleCommand(r rune) {
 	case r == 'G':
 		t.scroll = t.maxScroll()
 		t.render()
+	case r == 't' || r == 'T':
+		t.mu.Lock()
+		t.showTimeWait = !t.showTimeWait
+		t.mu.Unlock()
+		t.render()
 	}
 }
 
@@ -265,13 +272,15 @@ func (t *tuiDisplayer) handleEvent(evt capture.Event) {
 
 	switch evt.Type {
 	case capture.EventNewConnection:
+		if !t.showTimeWait && evt.Connection.State == types.StateTimeWait {
+			return
+		}
 		t.connections = append(t.connections, evt.Connection)
 		if len(t.connections) > t.maxConns {
 			t.connections = t.connections[len(t.connections)-t.maxConns:]
 		}
 	case capture.EventConnectionClosed:
 		if t.keep {
-			// Keep the connection visible, mark it as closed
 			key := evt.Connection.Key()
 			for i, c := range t.connections {
 				if c.Key() == key {
@@ -349,6 +358,9 @@ func (t *tuiDisplayer) renderHeader(out *strings.Builder) {
 	title := fmt.Sprintf(" netbrother | conns: %d", total)
 	if t.filter != "" {
 		title += fmt.Sprintf(" (filtered: %d)", filtered)
+	}
+	if !t.showTimeWait {
+		title += " (hide TIME_WAIT)"
 	}
 	title += fmt.Sprintf(" | alerts: %d ", len(t.alerts))
 
@@ -489,6 +501,7 @@ func (t *tuiDisplayer) renderStatusBar(out *strings.Builder) {
 	if len(conns) > t.visibleRows() {
 		hint = "[q] quit  [/] filter  [j/k] scroll  [g/G] top/bottom  [a] alerts"
 	}
+	hint += "  [t] timewait"
 	if len(hint) > t.termWidth {
 		hint = hint[:t.termWidth]
 	} else {
@@ -500,9 +513,20 @@ func (t *tuiDisplayer) renderStatusBar(out *strings.Builder) {
 }
 
 func (t *tuiDisplayer) filteredConnections() []types.Connection {
+	var base []types.Connection
+	if !t.showTimeWait {
+		for _, c := range t.connections {
+			if c.State != types.StateTimeWait {
+				base = append(base, c)
+			}
+		}
+	} else {
+		base = t.connections
+	}
+
 	if t.filter == "" {
-		sorted := make([]types.Connection, len(t.connections))
-		copy(sorted, t.connections)
+		sorted := make([]types.Connection, len(base))
+		copy(sorted, base)
 		sort.Slice(sorted, func(i, j int) bool {
 			return sorted[i].PID < sorted[j].PID
 		})
@@ -511,7 +535,7 @@ func (t *tuiDisplayer) filteredConnections() []types.Connection {
 
 	filterLower := strings.ToLower(t.filter)
 	var filtered []types.Connection
-	for _, c := range t.connections {
+	for _, c := range base {
 		if strings.Contains(strings.ToLower(c.ProcessName), filterLower) ||
 			strings.Contains(c.RemoteIP.String(), filterLower) ||
 			strings.Contains(fmt.Sprintf("%d", c.RemotePort), filterLower) ||

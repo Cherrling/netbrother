@@ -15,18 +15,19 @@ import (
 
 // Config holds all configuration for netbrother.
 type Config struct {
-	Mode        string
-	Interface   string
-	Rate        time.Duration
-	JSON        bool
-	Verbose     bool
-	BadPorts    []detect.PortRange
-	BadIPs      []string
-	Window      time.Duration
-	MinSamples  int
-	CVThreshold float64
-	Keep        bool
-	Output      string
+	Mode         string
+	Interface    string
+	Rate         time.Duration
+	JSON         bool
+	Verbose      bool
+	BadPorts     []detect.PortRange
+	BadIPs       []string
+	Window       time.Duration
+	MinSamples   int
+	CVThreshold  float64
+	Keep         bool
+	Output       string
+	ShowTimeWait bool
 }
 
 // DefaultConfig returns the default configuration.
@@ -59,7 +60,8 @@ func ParseFlags() (Config, error) {
 	minSamples := flag.Int("min-samples", cfg.MinSamples, "Min connections before periodic detection activates")
 	cvThreshold := flag.Float64("cv-threshold", cfg.CVThreshold, "Max coefficient of variation for beacon detection")
 	keep := flag.Bool("keep", cfg.Keep, "Keep closed connections visible in TUI")
-	output := flag.String("output", cfg.Output, "Save all connections to file (JSON lines)")
+	output := flag.String("output", cfg.Output, "Save all connections to file (table format)")
+	showTimeWait := flag.Bool("show-time-wait", cfg.ShowTimeWait, "Show TIME_WAIT connections")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 
 	flag.Parse()
@@ -79,6 +81,7 @@ func ParseFlags() (Config, error) {
 	cfg.CVThreshold = *cvThreshold
 	cfg.Keep = *keep
 	cfg.Output = *output
+	cfg.ShowTimeWait = *showTimeWait
 
 	if *badPorts != "" {
 		ports, err := parsePortRanges(*badPorts)
@@ -119,8 +122,9 @@ func (c Config) ToDetectorConfig() detect.Config {
 // ToDisplayConfig converts the global config to a display config.
 func (c Config) ToDisplayConfig() display.Config {
 	return display.Config{
-		Keep:   c.Keep,
-		Output: c.Output,
+		Keep:         c.Keep,
+		Output:       c.Output,
+		ShowTimeWait: c.ShowTimeWait,
 	}
 }
 

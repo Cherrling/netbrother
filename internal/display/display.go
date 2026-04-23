@@ -21,8 +21,9 @@ type LogConfig struct {
 
 // Config configures display features shared across modes.
 type Config struct {
-	Keep   bool   // keep closed connections visible
-	Output string // file path to save all connections
+	Keep         bool   // keep closed connections visible
+	Output       string // file path to save all connections
+	ShowTimeWait bool   // show TIME_WAIT connections
 }
 
 // New creates a Displayer based on the requested mode.

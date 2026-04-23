@@ -13,6 +13,7 @@ import (
 	"github.com/netbrother/netbrother/internal/detect"
 	"github.com/netbrother/netbrother/internal/display"
 	"github.com/netbrother/netbrother/internal/process"
+	"github.com/netbrother/netbrother/internal/types"
 )
 
 var version = "dev"
@@ -76,12 +77,21 @@ func main() {
 			"LOCAL", "REMOTE", "PID", "PROC", "EXE")
 		fmt.Fprintln(outputFile, "----------------------  ----------------------  --------  --------------------  --------")
 
+		showTimeWait := cfg.ShowTimeWait
 		original := processed
 		processed = make(chan capture.Event)
 		go func() {
 			defer close(processed)
 			for evt := range original {
 				conn := evt.Connection
+				if !showTimeWait && conn.State == types.StateTimeWait {
+					select {
+					case processed <- evt:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
 				exePath, _ := process.ProcessExePath(conn.PID)
 				local := fmt.Sprintf("%s:%d", conn.LocalIP, conn.LocalPort)
 				remote := fmt.Sprintf("%s:%d", conn.RemoteIP, conn.RemotePort)
