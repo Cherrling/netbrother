@@ -23,6 +23,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	if cfg.ShowVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	capturer, err := capture.New(cfg.Interface)
 	if err != nil {

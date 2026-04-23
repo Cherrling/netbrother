@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +26,7 @@ type Config struct {
 	Keep         bool
 	Output       string
 	ShowTimeWait bool
+	ShowVersion  bool
 }
 
 // DefaultConfig returns the default configuration.
@@ -63,9 +63,9 @@ func ParseFlags() (Config, error) {
 
 	flag.Parse()
 
+	cfg.ShowVersion = *showVersion
 	if *showVersion {
-		fmt.Println("netbrother v0.1.0")
-		os.Exit(0)
+		return cfg, nil
 	}
 
 	cfg.Mode = *mode
