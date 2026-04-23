@@ -36,6 +36,13 @@ const (
 	ansiBlueBg = "\033[44m"
 )
 
+const (
+	keyUp    = rune(0x100)
+	keyDown  = rune(0x101)
+	keyRight = rune(0x102)
+	keyLeft  = rune(0x103)
+)
+
 type winsize struct {
 	Row    uint16
 	Col    uint16
@@ -119,6 +126,64 @@ func (t *tuiDisplayer) restoreTerminal() {
 	}
 }
 
+func readInput(inputCh chan<- rune) {
+	buf := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			close(inputCh)
+			return
+		}
+		if buf[0] == 0x1b {
+			// Potential escape sequence — check with a short timeout
+			ch := make(chan byte, 2)
+			go func() {
+				var extra [2]byte
+				n, _ := os.Stdin.Read(extra[:1])
+				if n > 0 {
+					ch <- extra[0]
+				}
+				n, _ = os.Stdin.Read(extra[1:2])
+				if n > 0 {
+					ch <- extra[1]
+				}
+			}()
+			select {
+			case next := <-ch:
+				if next == '[' {
+					select {
+					case dir := <-ch:
+						switch dir {
+						case 'A':
+							inputCh <- keyUp
+						case 'B':
+							inputCh <- keyDown
+						case 'C':
+							inputCh <- keyRight
+						case 'D':
+							inputCh <- keyLeft
+						default:
+							inputCh <- 0x1b
+							inputCh <- '['
+							inputCh <- rune(dir)
+						}
+					case <-time.After(50 * time.Millisecond):
+						inputCh <- 0x1b
+						inputCh <- '['
+					}
+				} else {
+					inputCh <- 0x1b
+					inputCh <- rune(next)
+				}
+			case <-time.After(50 * time.Millisecond):
+				inputCh <- 0x1b
+			}
+			continue
+		}
+		inputCh <- rune(buf[0])
+	}
+}
+
 func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) error {
 	t.running = true
 	defer func() { t.running = false }()
@@ -133,17 +198,7 @@ func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 	defer signal.Stop(sigCh)
 
 	inputCh := make(chan rune, 64)
-	go func() {
-		buf := make([]byte, 1)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil || n == 0 {
-				close(inputCh)
-				return
-			}
-			inputCh <- rune(buf[0])
-		}
-	}()
+	go readInput(inputCh)
 
 	fmt.Fprint(os.Stderr, ansiHideCursor)
 
@@ -244,10 +299,10 @@ func (t *tuiDisplayer) handleCommand(r rune) {
 		t.filterBuf.Reset()
 		t.filterMode = true
 		t.showFilterPrompt()
-	case r == 'j' || r == 'J':
+	case r == 'j' || r == 'J' || r == keyDown || r == keyRight:
 		t.scroll++
 		t.render()
-	case r == 'k' || r == 'K':
+	case r == 'k' || r == 'K' || r == keyUp || r == keyLeft:
 		if t.scroll > 0 {
 			t.scroll--
 		}
@@ -378,7 +433,7 @@ func (t *tuiDisplayer) renderHeader(out *strings.Builder) {
 }
 
 func (t *tuiDisplayer) renderTable(out *strings.Builder, maxRows int) {
-	header := fmt.Sprintf(" %-5s %-12s %-21s %-21s %-8s",
+	header := fmt.Sprintf(" %-8s %-20s %-22s %-22s %-8s",
 		"PID", "PROC", "LOCAL", "REMOTE", "STATE")
 	out.WriteString(ansiBold)
 	out.WriteString(header)
@@ -424,7 +479,7 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, maxRows int) {
 			alertMarker = ansiRed + " ***" + ansiReset
 		}
 
-		line := fmt.Sprintf(" %5s %-12s %-21s %-21s %-8s%s",
+		line := fmt.Sprintf(" %8s %-20s %-22s %-22s %-8s%s",
 			pidStr, procName, localAddr, remoteAddr, stateStr, alertMarker)
 
 		if len(line) > t.termWidth {
@@ -450,7 +505,7 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, maxRows int) {
 				pct = 100
 			}
 		}
-		indicator := fmt.Sprintf(" %d/%d connections (%d%%)  [j] down  [k] up  [g] top  [G] bottom",
+		indicator := fmt.Sprintf(" %d/%d connections (%d%%)  [j/k/arrows] scroll  [g/G] top/bottom",
 			end, len(conns), pct)
 		if len(indicator) > t.termWidth {
 			indicator = indicator[:t.termWidth]
@@ -497,9 +552,9 @@ func (t *tuiDisplayer) renderAlerts(out *strings.Builder, maxRows int) {
 
 func (t *tuiDisplayer) renderStatusBar(out *strings.Builder) {
 	conns := t.filteredConnections()
-	hint := "[q] quit  [/] filter  [j/k] scroll  [a] alerts"
+	hint := "[q] quit  [/] filter  [j/k/arrows] scroll  [a] alerts"
 	if len(conns) > t.visibleRows() {
-		hint = "[q] quit  [/] filter  [j/k] scroll  [g/G] top/bottom  [a] alerts"
+		hint = "[q] quit  [/] filter  [j/k/arrows] scroll  [g/G] top/bottom  [a] alerts"
 	}
 	hint += "  [t] timewait"
 	if len(hint) > t.termWidth {

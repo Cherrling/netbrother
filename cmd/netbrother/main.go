@@ -78,6 +78,7 @@ func main() {
 		fmt.Fprintln(outputFile, "----------------------  ----------------------  --------  --------------------  --------")
 
 		showTimeWait := cfg.ShowTimeWait
+		written := make(map[types.ConnectionKey]bool)
 		original := processed
 		processed = make(chan capture.Event)
 		go func() {
@@ -92,6 +93,16 @@ func main() {
 					}
 					continue
 				}
+				key := conn.Key()
+				if written[key] {
+					select {
+					case processed <- evt:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				written[key] = true
 				exePath, _ := process.ProcessExePath(conn.PID)
 				local := fmt.Sprintf("%s:%d", conn.LocalIP, conn.LocalPort)
 				remote := fmt.Sprintf("%s:%d", conn.RemoteIP, conn.RemotePort)
