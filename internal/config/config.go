@@ -130,10 +130,7 @@ func (c Config) ToDisplayConfig() display.Config {
 
 // ToLogConfig converts the global config to a log display config.
 func (c Config) ToLogConfig() display.LogConfig {
-	return display.LogConfig{
-		JSON:  c.JSON,
-		Color: true,
-	}
+	return display.LogConfig{}
 }
 
 func parsePortRanges(s string) ([]detect.PortRange, error) {

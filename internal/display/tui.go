@@ -335,21 +335,18 @@ func (t *tuiDisplayer) handleEvent(evt capture.Event) {
 			t.connections = t.connections[len(t.connections)-t.maxConns:]
 		}
 	case capture.EventConnectionClosed:
-		if t.keep {
-			key := evt.Connection.Key()
-			for i, c := range t.connections {
-				if c.Key() == key {
+		key := evt.Connection.Key()
+		for i, c := range t.connections {
+			if c.Key() == key {
+				if t.keep {
 					t.connections[i].State = types.StateClose
-					break
-				}
-			}
-		} else {
-			key := evt.Connection.Key()
-			for i, c := range t.connections {
-				if c.Key() == key {
+					if evt.Connection.ProcessName != "" {
+						t.connections[i].ProcessName = evt.Connection.ProcessName
+					}
+				} else {
 					t.connections = append(t.connections[:i], t.connections[i+1:]...)
-					break
 				}
+				break
 			}
 		}
 	}

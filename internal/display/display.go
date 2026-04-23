@@ -13,11 +13,8 @@ type Displayer interface {
 	Close() error
 }
 
-// LogConfig configures the log-mode display.
-type LogConfig struct {
-	JSON  bool
-	Color bool
-}
+// LogConfig is reserved for future log-mode options.
+type LogConfig struct{}
 
 // Config configures display features shared across modes.
 type Config struct {
