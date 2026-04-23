@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unsafe"
 
 	"github.com/netbrother/netbrother/internal/capture"
 	"github.com/netbrother/netbrother/internal/types"
@@ -37,6 +38,48 @@ const (
 	ansiBlueBg   = "\033[44m"
 )
 
+// termios mirrors the Linux termios struct for raw mode terminal I/O.
+type termios struct {
+	Iflag  uint32
+	Oflag  uint32
+	Cflag  uint32
+	Lflag  uint32
+	Cc     [20]byte
+	Ispeed uint32
+	Ospeed uint32
+}
+
+const (
+	tcgets  = 0x5401
+	tcsets  = 0x5402
+	icanon  = 0x0002
+	echo    = 0x0008
+	vmint   = 6
+	vtime   = 7
+)
+
+func makeRaw(fd uintptr) (*termios, error) {
+	var orig termios
+	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, tcgets, uintptr(unsafe.Pointer(&orig))); err != 0 {
+		return nil, err
+	}
+	raw := orig
+	raw.Lflag &^= icanon | echo
+	raw.Cc[vtime] = 0  // no timeout
+	raw.Cc[vmint] = 1  // return as soon as 1 byte is available
+	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, tcsets, uintptr(unsafe.Pointer(&raw))); err != 0 {
+		return nil, err
+	}
+	return &orig, nil
+}
+
+func restoreTerm(fd uintptr, orig *termios) error {
+	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, tcsets, uintptr(unsafe.Pointer(orig))); err != 0 {
+		return err
+	}
+	return nil
+}
+
 type tuiDisplayer struct {
 	mu           sync.Mutex
 	connections  []types.Connection
@@ -48,6 +91,7 @@ type tuiDisplayer struct {
 	running      bool
 	done         chan struct{}
 	captureMode  string
+	origTermios  *termios
 }
 
 func newTUDisplay() (*tuiDisplayer, error) {
@@ -63,12 +107,23 @@ func (t *tuiDisplayer) Close() error {
 		close(t.done)
 	}
 	fmt.Fprint(os.Stderr, ansiShowCursor)
+	if t.origTermios != nil {
+		restoreTerm(os.Stdin.Fd(), t.origTermios)
+	}
 	return nil
 }
 
 func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) error {
 	t.running = true
 	defer func() { t.running = false }()
+
+	// Switch terminal to raw mode so individual keypresses are delivered immediately
+	orig, err := makeRaw(os.Stdin.Fd())
+	if err != nil {
+		return fmt.Errorf("raw terminal: %w", err)
+	}
+	t.origTermios = orig
+	defer restoreTerm(os.Stdin.Fd(), orig)
 
 	// Handle terminal signals
 	sigCh := make(chan os.Signal, 1)
@@ -133,9 +188,8 @@ func (t *tuiDisplayer) readInput(ch chan<- rune) {
 		if err != nil || n == 0 {
 			return
 		}
-		// Only pass printable characters and control chars we care about
 		r := rune(buf[0])
-		if r == 'q' || r == 'Q' || r == 'a' || r == 'A' || r == '/' || r == '\n' || r == '\b' || r == 0x7f {
+		if r == 'q' || r == 'Q' || r == 'a' || r == 'A' || r == '/' || r == '\n' || r == '\r' || r == '\b' || r == 0x7f {
 			select {
 			case ch <- r:
 			default:
@@ -315,7 +369,7 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int)
 
 		// Color suspicious connections
 		if hasAlert {
-			out.WriteString(ansiYellowBg)
+			out.WriteString(ansiYellow)
 			out.WriteString(line)
 			out.WriteString(ansiReset)
 		} else {
