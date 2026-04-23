@@ -17,16 +17,16 @@ func init() {
 }
 
 type procCapturer struct {
-	mu        sync.Mutex
-	interval  time.Duration
-	known     map[types.ConnectionKey]bool // tracks connections from previous poll
-	inodePID  map[uint64]int               // cache: socket inode -> PID (survives TIME_WAIT)
+	mu       sync.Mutex
+	interval time.Duration
+	known    map[types.ConnectionKey]types.Connection // stores full connection for close events
+	inodePID map[uint64]int                           // cache: socket inode -> PID (survives TIME_WAIT)
 }
 
 func newProcCapturer() (*procCapturer, error) {
 	return &procCapturer{
 		interval: 1 * time.Second,
-		known:    make(map[types.ConnectionKey]bool),
+		known:    make(map[types.ConnectionKey]types.Connection),
 		inodePID: make(map[uint64]int),
 	}, nil
 }
@@ -55,7 +55,6 @@ func (p *procCapturer) poll(ctx context.Context, events chan<- Event) {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
-	// Do an initial scan to populate known connections
 	p.scanAndEmit(ctx, events)
 
 	for {
@@ -76,7 +75,6 @@ func (p *procCapturer) scanAndEmit(ctx context.Context, events chan<- Event) {
 		return
 	}
 
-	// Build fresh inode -> PID map from /proc (expensive but accurate)
 	pidMap, err := process.AllPIDsWithFds()
 	if err != nil {
 		return
@@ -88,12 +86,10 @@ func (p *procCapturer) scanAndEmit(ctx context.Context, events chan<- Event) {
 		}
 	}
 
-	// Merge live data into cache (update cache with fresh mappings)
 	p.mu.Lock()
 	for inode, pid := range liveInodePID {
 		p.inodePID[inode] = pid
 	}
-	// Build final lookup: live first, then cache as fallback
 	inodeToPID := make(map[uint64]int, len(liveInodePID)+len(p.inodePID))
 	for inode, pid := range liveInodePID {
 		inodeToPID[inode] = pid
@@ -118,8 +114,8 @@ func (p *procCapturer) scanAndEmit(ctx context.Context, events chan<- Event) {
 		currentKeys[key] = true
 
 		p.mu.Lock()
-		if !p.known[key] {
-			p.known[key] = true
+		if _, exists := p.known[key]; !exists {
+			p.known[key] = conn
 			newConns = append(newConns, conn)
 			if conn.PID > 0 {
 				p.inodePID[raw.Inode] = conn.PID
@@ -140,30 +136,24 @@ func (p *procCapturer) scanAndEmit(ctx context.Context, events chan<- Event) {
 		}
 	}
 
-	// Detect closed connections (collect under lock, emit outside)
-	var closedKeys []types.ConnectionKey
+	// Detect closed connections — emit full connection info
+	var closedEvents []Event
 	p.mu.Lock()
-	for key := range p.known {
+	for key, conn := range p.known {
 		if !currentKeys[key] {
 			delete(p.known, key)
-			closedKeys = append(closedKeys, key)
+			closedEvents = append(closedEvents, Event{
+				Timestamp:  now,
+				Type:       EventConnectionClosed,
+				Connection: conn,
+			})
 		}
 	}
 	p.mu.Unlock()
 
-	for _, key := range closedKeys {
+	for _, evt := range closedEvents {
 		select {
-		case events <- Event{
-			Timestamp: now,
-			Type:      EventConnectionClosed,
-			Connection: types.Connection{
-				LocalIP:    net.ParseIP(key.LocalIP),
-				LocalPort:  key.LocalPort,
-				RemoteIP:   net.ParseIP(key.RemoteIP),
-				RemotePort: key.RemotePort,
-				PID:        key.PID,
-			},
-		}:
+		case events <- evt:
 		case <-ctx.Done():
 			return
 		}

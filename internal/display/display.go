@@ -9,12 +9,7 @@ import (
 
 // Displayer is the abstraction over output modes.
 type Displayer interface {
-	// Start begins consuming events and rendering output.
-	// This is a blocking call; it returns when ctx is cancelled or the
-	// events channel is closed.
 	Start(ctx context.Context, events <-chan capture.Event) error
-
-	// Close tears down the display.
 	Close() error
 }
 
@@ -24,14 +19,19 @@ type LogConfig struct {
 	Color bool
 }
 
+// Config configures display features shared across modes.
+type Config struct {
+	Keep   bool   // keep closed connections visible
+	Output string // file path to save all connections
+}
+
 // New creates a Displayer based on the requested mode.
-// mode values: "tui" (default), "log".
-func New(mode string, cfg LogConfig) (Displayer, error) {
+func New(mode string, displayCfg Config, logCfg LogConfig) (Displayer, error) {
 	switch mode {
 	case "tui":
-		return newTUDisplay()
+		return newTUDisplay(displayCfg)
 	case "log":
-		return newLogDisplayer(cfg), nil
+		return newLogDisplayer(logCfg), nil
 	default:
 		return nil, fmt.Errorf("unknown display mode: %q", mode)
 	}

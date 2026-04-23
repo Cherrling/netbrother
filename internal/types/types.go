@@ -96,10 +96,3 @@ func (c Connection) Key() ConnectionKey {
 		PID:        c.PID,
 	}
 }
-
-// ProcessSnapshot is a lightweight representation for display.
-type ProcessSnapshot struct {
-	PID         int
-	Name        string
-	Connections int
-}

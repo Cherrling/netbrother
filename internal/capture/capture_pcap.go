@@ -24,11 +24,11 @@ func init() {
 }
 
 type pcapCapturer struct {
-	iface      string
-	snapLen    int32
-	promisc    bool
-	timeout    time.Duration
-	handle     *pcap.Handle
+	iface   string
+	snapLen int32
+	promisc bool
+	timeout time.Duration
+	handle  *pcap.Handle
 }
 
 func newPcapCapturer(iface string) (*pcapCapturer, error) {

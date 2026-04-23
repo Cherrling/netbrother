@@ -49,21 +49,21 @@ func (l *logDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 }
 
 type logEvent struct {
-	Timestamp   string              `json:"timestamp"`
-	EventType   string              `json:"event_type"`
-	Connection  logConnection       `json:"connection"`
-	Alerts      []logAlert          `json:"alerts,omitempty"`
+	Timestamp  string        `json:"timestamp"`
+	EventType  string        `json:"event_type"`
+	Connection logConnection `json:"connection"`
+	Alerts     []logAlert    `json:"alerts,omitempty"`
 }
 
 type logConnection struct {
-	LocalIP     string `json:"local_ip"`
-	LocalPort   uint16 `json:"local_port"`
-	RemoteIP    string `json:"remote_ip"`
-	RemotePort  uint16 `json:"remote_port"`
-	PID         int    `json:"pid"`
-	Process     string `json:"process"`
-	Direction   string `json:"direction"`
-	State       string `json:"state"`
+	LocalIP    string `json:"local_ip"`
+	LocalPort  uint16 `json:"local_port"`
+	RemoteIP   string `json:"remote_ip"`
+	RemotePort uint16 `json:"remote_port"`
+	PID        int    `json:"pid"`
+	Process    string `json:"process"`
+	Direction  string `json:"direction"`
+	State      string `json:"state"`
 }
 
 type logAlert struct {
@@ -134,4 +134,3 @@ func (l *logDisplayer) renderText(evt capture.Event) {
 
 	fmt.Fprintln(l.writer)
 }
-

@@ -215,6 +215,15 @@ func ProcessName(pid int) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+// ProcessExePath returns the executable path for a given PID.
+func ProcessExePath(pid int) (string, error) {
+	path, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // AllPIDsWithFds returns all PIDs that have open sockets.
 // Returns a map of PID -> list of socket inodes.
 func AllPIDsWithFds() (map[int][]uint64, error) {

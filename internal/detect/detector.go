@@ -20,10 +20,10 @@ type Orchestrator struct {
 
 // Config configures the detection engine.
 type Config struct {
-	BadPorts   []PortRange
-	BadIPs     []string
-	Window     int // sliding window in seconds (default: 300 = 5m)
-	MinSamples int // minimum connections before analysis (default: 3)
+	BadPorts    []PortRange
+	BadIPs      []string
+	Window      int     // sliding window in seconds (default: 300 = 5m)
+	MinSamples  int     // minimum connections before analysis (default: 3)
 	CVThreshold float64 // max coefficient of variation (default: 0.25)
 }
 

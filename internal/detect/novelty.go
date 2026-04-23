@@ -62,9 +62,9 @@ func (d *noveltyDetector) Analyze(evt capture.Event) []capture.Alert {
 	if !d.seenConnections[key] {
 		d.seenConnections[key] = true
 		alerts = append(alerts, capture.Alert{
-			Type:       capture.AlertNewConnection,
-			Severity:   capture.SeverityInfo,
-			Message:    fmt.Sprintf("New connection: %s:%d -> %s:%d",
+			Type:     capture.AlertNewConnection,
+			Severity: capture.SeverityInfo,
+			Message: fmt.Sprintf("New connection: %s:%d -> %s:%d",
 				conn.LocalIP, conn.LocalPort, conn.RemoteIP, conn.RemotePort),
 			Connection: conn,
 			Timestamp:  now,

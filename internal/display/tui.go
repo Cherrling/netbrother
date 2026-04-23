@@ -33,9 +33,7 @@ const (
 	ansiCyan   = "\033[36m"
 	ansiWhite  = "\033[37m"
 
-	ansiRedBg    = "\033[41m"
-	ansiYellowBg = "\033[43m"
-	ansiBlueBg   = "\033[44m"
+	ansiBlueBg = "\033[44m"
 )
 
 type winsize struct {
@@ -46,16 +44,16 @@ type winsize struct {
 }
 
 type tuiDisplayer struct {
-	mu           sync.Mutex
-	connections  []types.Connection
-	alerts       []capture.Alert
-	filter       string
-	showAlerts   bool
-	maxAlerts    int
-	maxConns     int
-	running      bool
-	done         chan struct{}
-	rawTerminal  bool
+	mu          sync.Mutex
+	connections []types.Connection
+	alerts      []capture.Alert
+	filter      string
+	showAlerts  bool
+	maxAlerts   int
+	maxConns    int
+	running     bool
+	done        chan struct{}
+	rawTerminal bool
 
 	// filter state
 	filterMode bool
@@ -67,16 +65,20 @@ type tuiDisplayer struct {
 
 	// scroll offset
 	scroll int
+
+	// options
+	keep bool // keep closed connections visible
 }
 
-func newTUDisplay() (*tuiDisplayer, error) {
+func newTUDisplay(cfg Config) (*tuiDisplayer, error) {
 	w, h := getTermSize()
 	return &tuiDisplayer{
-		maxAlerts:   100,
-		maxConns:    500,
-		done:        make(chan struct{}),
-		termWidth:   w,
-		termHeight:  h,
+		maxAlerts:  100,
+		maxConns:   500,
+		done:       make(chan struct{}),
+		termWidth:  w,
+		termHeight: h,
+		keep:       cfg.Keep,
 	}, nil
 }
 
@@ -268,11 +270,22 @@ func (t *tuiDisplayer) handleEvent(evt capture.Event) {
 			t.connections = t.connections[len(t.connections)-t.maxConns:]
 		}
 	case capture.EventConnectionClosed:
-		key := evt.Connection.Key()
-		for i, c := range t.connections {
-			if c.Key() == key {
-				t.connections = append(t.connections[:i], t.connections[i+1:]...)
-				break
+		if t.keep {
+			// Keep the connection visible, mark it as closed
+			key := evt.Connection.Key()
+			for i, c := range t.connections {
+				if c.Key() == key {
+					t.connections[i].State = types.StateClose
+					break
+				}
+			}
+		} else {
+			key := evt.Connection.Key()
+			for i, c := range t.connections {
+				if c.Key() == key {
+					t.connections = append(t.connections[:i], t.connections[i+1:]...)
+					break
+				}
 			}
 		}
 	}

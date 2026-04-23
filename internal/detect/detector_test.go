@@ -71,9 +71,9 @@ func TestPeriodicDetector_RegularInterval(t *testing.T) {
 
 func TestPeriodicDetector_IrregularInterval(t *testing.T) {
 	d := newPeriodicDetector(Config{
-		MinSamples: 4,
+		MinSamples:  4,
 		CVThreshold: 0.25,
-		Window:     300,
+		Window:      300,
 	})
 	conn := makeConn("10.0.0.5", 4444, 1234, "nc")
 

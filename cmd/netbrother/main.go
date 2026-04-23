@@ -12,6 +12,7 @@ import (
 	"github.com/netbrother/netbrother/internal/config"
 	"github.com/netbrother/netbrother/internal/detect"
 	"github.com/netbrother/netbrother/internal/display"
+	"github.com/netbrother/netbrother/internal/process"
 )
 
 var version = "dev"
@@ -22,7 +23,6 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	// Create capturer (auto-detect: pcap -> proc)
 	capturer, err := capture.New(cfg.Interface)
 	if err != nil {
 		log.Fatalf("no capture backend available: %v", err)
@@ -32,11 +32,9 @@ func main() {
 			capturer.Name(), capturer.RequiresRoot())
 	}
 
-	// Create detector orchestrator
 	detector := detect.NewOrchestrator(cfg.ToDetectorConfig())
 
-	// Create display
-	displayer, err := display.New(cfg.Mode, cfg.ToDisplayConfig())
+	displayer, err := display.New(cfg.Mode, cfg.ToDisplayConfig(), cfg.ToLogConfig())
 	if err != nil {
 		log.Fatalf("cannot create display: %v", err)
 	}
@@ -44,7 +42,6 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Start capture
 	events, err := capturer.Start(ctx)
 	if err != nil {
 		log.Fatalf("cannot start capture: %v", err)
@@ -52,21 +49,60 @@ func main() {
 
 	// Event processing pipeline: capture -> detect -> display
 	processed := make(chan capture.Event)
+	detectorOut := processed // save value, not variable (avoid closure capture bug)
 	go func() {
-		defer close(processed)
+		defer close(detectorOut)
 		for evt := range events {
 			evt.Alerts = detector.Analyze(evt)
 			select {
-			case processed <- evt:
+			case detectorOut <- evt:
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
-	// Run display (blocking)
+	// Optional: write all events to a file before forwarding to display
+	var outputFile *os.File
+	if cfg.Output != "" {
+		f, err := os.Create(cfg.Output)
+		if err != nil {
+			log.Fatalf("output file: %v", err)
+		}
+		defer f.Close()
+		outputFile = f
+
+		fmt.Fprintf(outputFile, "%-22s  %-22s  %-8s  %-20s  %s\n",
+			"LOCAL", "REMOTE", "PID", "PROC", "EXE")
+		fmt.Fprintln(outputFile, "----------------------  ----------------------  --------  --------------------  --------")
+
+		original := processed
+		processed = make(chan capture.Event)
+		go func() {
+			defer close(processed)
+			for evt := range original {
+				conn := evt.Connection
+				exePath, _ := process.ProcessExePath(conn.PID)
+				local := fmt.Sprintf("%s:%d", conn.LocalIP, conn.LocalPort)
+				remote := fmt.Sprintf("%s:%d", conn.RemoteIP, conn.RemotePort)
+				fmt.Fprintf(outputFile, "%-22s  %-22s  %-8d  %-20s  %s\n",
+					local, remote,
+					conn.PID, conn.ProcessName, exePath)
+				select {
+				case processed <- evt:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	if err := displayer.Start(ctx, processed); err != nil &&
 		err != context.Canceled {
 		log.Fatalf("display error: %v", err)
+	}
+
+	if outputFile != nil {
+		outputFile.Sync()
 	}
 }

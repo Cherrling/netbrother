@@ -15,16 +15,18 @@ import (
 
 // Config holds all configuration for netbrother.
 type Config struct {
-	Mode      string
-	Interface string
-	Rate      time.Duration
-	JSON      bool
-	Verbose   bool
-	BadPorts  []detect.PortRange
-	BadIPs    []string
-	Window    time.Duration
-	MinSamples int
+	Mode        string
+	Interface   string
+	Rate        time.Duration
+	JSON        bool
+	Verbose     bool
+	BadPorts    []detect.PortRange
+	BadIPs      []string
+	Window      time.Duration
+	MinSamples  int
 	CVThreshold float64
+	Keep        bool
+	Output      string
 }
 
 // DefaultConfig returns the default configuration.
@@ -56,6 +58,8 @@ func ParseFlags() (Config, error) {
 	window := flag.Duration("window", cfg.Window, "Sliding window for periodic detection")
 	minSamples := flag.Int("min-samples", cfg.MinSamples, "Min connections before periodic detection activates")
 	cvThreshold := flag.Float64("cv-threshold", cfg.CVThreshold, "Max coefficient of variation for beacon detection")
+	keep := flag.Bool("keep", cfg.Keep, "Keep closed connections visible in TUI")
+	output := flag.String("output", cfg.Output, "Save all connections to file (JSON lines)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 
 	flag.Parse()
@@ -73,8 +77,9 @@ func ParseFlags() (Config, error) {
 	cfg.Window = *window
 	cfg.MinSamples = *minSamples
 	cfg.CVThreshold = *cvThreshold
+	cfg.Keep = *keep
+	cfg.Output = *output
 
-	// Parse bad ports
 	if *badPorts != "" {
 		ports, err := parsePortRanges(*badPorts)
 		if err != nil {
@@ -83,13 +88,11 @@ func ParseFlags() (Config, error) {
 		cfg.BadPorts = ports
 	}
 
-	// Parse bad IPs
 	if *badIPs != "" {
 		ips := strings.Split(*badIPs, ",")
 		for _, ip := range ips {
 			ip = strings.TrimSpace(ip)
 			if ip != "" {
-				// Validate CIDR
 				_, _, err := net.ParseCIDR(ip)
 				if err != nil {
 					return cfg, fmt.Errorf("bad-ips: invalid CIDR %q: %w", ip, err)
@@ -113,8 +116,16 @@ func (c Config) ToDetectorConfig() detect.Config {
 	}
 }
 
-// ToDisplayConfig converts the global config to a log display config.
-func (c Config) ToDisplayConfig() display.LogConfig {
+// ToDisplayConfig converts the global config to a display config.
+func (c Config) ToDisplayConfig() display.Config {
+	return display.Config{
+		Keep:   c.Keep,
+		Output: c.Output,
+	}
+}
+
+// ToLogConfig converts the global config to a log display config.
+func (c Config) ToLogConfig() display.LogConfig {
 	return display.LogConfig{
 		JSON:  c.JSON,
 		Color: true,
@@ -132,7 +143,6 @@ func parsePortRanges(s string) ([]detect.PortRange, error) {
 		}
 
 		if strings.Contains(part, "-") {
-			// Range format: start-end
 			ends := strings.SplitN(part, "-", 2)
 			start, err := strconv.ParseUint(strings.TrimSpace(ends[0]), 10, 16)
 			if err != nil {
@@ -144,7 +154,6 @@ func parsePortRanges(s string) ([]detect.PortRange, error) {
 			}
 			ranges = append(ranges, detect.PortRange{Start: uint16(start), End: uint16(end)})
 		} else {
-			// Single port
 			port, err := strconv.ParseUint(part, 10, 16)
 			if err != nil {
 				return nil, fmt.Errorf("invalid port %q: %w", part, err)

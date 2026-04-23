@@ -10,8 +10,8 @@ import (
 )
 
 type beaconKey struct {
-	PID       int
-	RemoteIP  string
+	PID        int
+	RemoteIP   string
 	RemotePort uint16
 }
 
