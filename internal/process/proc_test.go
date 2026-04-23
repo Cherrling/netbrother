@@ -74,9 +74,9 @@ func TestHexToIP(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := hexToIP(tt.hex)
+		got := HexToIP(tt.hex)
 		if got != tt.want {
-			t.Errorf("hexToIP(%s) = %s, want %s", tt.hex, got, tt.want)
+			t.Errorf("HexToIP(%s) = %s, want %s", tt.hex, got, tt.want)
 		}
 	}
 }

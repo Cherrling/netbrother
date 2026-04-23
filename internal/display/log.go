@@ -135,21 +135,3 @@ func (l *logDisplayer) renderText(evt capture.Event) {
 	fmt.Fprintln(l.writer)
 }
 
-// tuiStub is a placeholder that will be replaced when bubbletea is added.
-type tuiDisplayer struct{}
-
-func newTUDisplay() (*tuiDisplayer, error) {
-	return &tuiDisplayer{}, nil
-}
-
-func (t *tuiDisplayer) Close() error {
-	return nil
-}
-
-func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) error {
-	// TODO: implement with bubbletea
-	// For now, fall back to log mode
-	fmt.Fprintln(os.Stderr, "TUI mode not yet implemented, falling back to log mode")
-	logD := newLogDisplayer(LogConfig{JSON: false, Color: true})
-	return logD.Start(ctx, events)
-}

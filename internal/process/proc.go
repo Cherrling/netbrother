@@ -19,9 +19,9 @@ type RawConnection struct {
 	Inode      uint64
 }
 
-// hexToIP converts a big-endian hex IP string to dotted-decimal notation.
+// HexToIP converts a big-endian hex IP string to dotted-decimal notation.
 // /proc/net/tcp stores IPs as 4-byte hex in network byte order.
-func hexToIP(hex string) string {
+func HexToIP(hex string) string {
 	if len(hex) == 8 {
 		// IPv4: 0100007F -> 127.0.0.1
 		n, _ := strconv.ParseUint(hex, 16, 32)
