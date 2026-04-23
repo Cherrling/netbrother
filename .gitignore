@@ -1,2 +1,3 @@
 /netbrother
 cmd/netbrother/netbrother
+internal/capture/bpf/vmlinux.h
