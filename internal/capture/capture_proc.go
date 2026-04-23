@@ -20,12 +20,14 @@ type procCapturer struct {
 	mu        sync.Mutex
 	interval  time.Duration
 	known     map[types.ConnectionKey]bool // tracks connections from previous poll
+	inodePID  map[uint64]int               // cache: socket inode -> PID (survives TIME_WAIT)
 }
 
 func newProcCapturer() (*procCapturer, error) {
 	return &procCapturer{
 		interval: 1 * time.Second,
 		known:    make(map[types.ConnectionKey]bool),
+		inodePID: make(map[uint64]int),
 	}, nil
 }
 
@@ -74,25 +76,39 @@ func (p *procCapturer) scanAndEmit(ctx context.Context, events chan<- Event) {
 		return
 	}
 
-	// Build inode -> PID map once per scan (expensive)
+	// Build fresh inode -> PID map from /proc (expensive but accurate)
 	pidMap, err := process.AllPIDsWithFds()
 	if err != nil {
 		return
 	}
-	// Also build inode -> PID reverse map
-	inodeToPID := make(map[uint64]int)
+	liveInodePID := make(map[uint64]int, len(pidMap)*4)
 	for pid, inodes := range pidMap {
 		for _, inode := range inodes {
-			inodeToPID[inode] = pid
+			liveInodePID[inode] = pid
 		}
 	}
 
-	currentKeys := make(map[types.ConnectionKey]bool)
+	// Merge live data into cache (update cache with fresh mappings)
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	for inode, pid := range liveInodePID {
+		p.inodePID[inode] = pid
+	}
+	// Build final lookup: live first, then cache as fallback
+	inodeToPID := make(map[uint64]int, len(liveInodePID)+len(p.inodePID))
+	for inode, pid := range liveInodePID {
+		inodeToPID[inode] = pid
+	}
+	for inode, pid := range p.inodePID {
+		if _, ok := liveInodePID[inode]; !ok {
+			inodeToPID[inode] = pid
+		}
+	}
+	p.mu.Unlock()
+
+	currentKeys := make(map[types.ConnectionKey]bool)
+	var newConns []types.Connection
 
 	for _, raw := range rawConns {
-		// Skip LISTEN sockets — we only care about established connections
 		if raw.State == int(types.StateListen) {
 			continue
 		}
@@ -101,40 +117,55 @@ func (p *procCapturer) scanAndEmit(ctx context.Context, events chan<- Event) {
 		key := conn.Key()
 		currentKeys[key] = true
 
+		p.mu.Lock()
 		if !p.known[key] {
 			p.known[key] = true
-			select {
-			case events <- Event{
-				Timestamp:  now,
-				Type:       EventNewConnection,
-				Connection: conn,
-			}:
-			case <-ctx.Done():
-				return
+			newConns = append(newConns, conn)
+			if conn.PID > 0 {
+				p.inodePID[raw.Inode] = conn.PID
 			}
+		}
+		p.mu.Unlock()
+	}
+
+	for _, conn := range newConns {
+		select {
+		case events <- Event{
+			Timestamp:  now,
+			Type:       EventNewConnection,
+			Connection: conn,
+		}:
+		case <-ctx.Done():
+			return
 		}
 	}
 
-	// Detect closed connections
+	// Detect closed connections (collect under lock, emit outside)
+	var closedKeys []types.ConnectionKey
+	p.mu.Lock()
 	for key := range p.known {
 		if !currentKeys[key] {
 			delete(p.known, key)
-			// Reconstruct a minimal Connection for the close event
-			select {
-			case events <- Event{
-				Timestamp: now,
-				Type:      EventConnectionClosed,
-				Connection: types.Connection{
-					LocalIP:    net.ParseIP(key.LocalIP),
-					LocalPort:  key.LocalPort,
-					RemoteIP:   net.ParseIP(key.RemoteIP),
-					RemotePort: key.RemotePort,
-					PID:        key.PID,
-				},
-			}:
-			case <-ctx.Done():
-				return
-			}
+			closedKeys = append(closedKeys, key)
+		}
+	}
+	p.mu.Unlock()
+
+	for _, key := range closedKeys {
+		select {
+		case events <- Event{
+			Timestamp: now,
+			Type:      EventConnectionClosed,
+			Connection: types.Connection{
+				LocalIP:    net.ParseIP(key.LocalIP),
+				LocalPort:  key.LocalPort,
+				RemoteIP:   net.ParseIP(key.RemoteIP),
+				RemotePort: key.RemotePort,
+				PID:        key.PID,
+			},
+		}:
+		case <-ctx.Done():
+			return
 		}
 	}
 }
