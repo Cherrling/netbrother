@@ -18,7 +18,6 @@ type Config struct {
 	Mode         string
 	Interface    string
 	Rate         time.Duration
-	JSON         bool
 	Verbose      bool
 	BadPorts     []detect.PortRange
 	BadIPs       []string
@@ -36,7 +35,6 @@ func DefaultConfig() Config {
 		Mode:        "tui",
 		Interface:   "eth0",
 		Rate:        1 * time.Second,
-		JSON:        true,
 		Verbose:     false,
 		BadPorts:    detect.DefaultBadPorts(),
 		Window:      5 * time.Minute,
@@ -52,7 +50,6 @@ func ParseFlags() (Config, error) {
 	mode := flag.String("mode", cfg.Mode, "Display mode: tui or log")
 	iface := flag.String("i", cfg.Interface, "Network interface (for pcap mode)")
 	rate := flag.Duration("rate", cfg.Rate, "Polling interval for /proc mode")
-	json := flag.Bool("json", cfg.JSON, "JSON output in log mode")
 	verbose := flag.Bool("v", cfg.Verbose, "Verbose logging")
 	badPorts := flag.String("bad-ports", "", "Comma-separated port ranges to flag (e.g. 4444,1337,6660-6669)")
 	badIPs := flag.String("bad-ips", "", "Comma-separated CIDR ranges to flag")
@@ -74,7 +71,6 @@ func ParseFlags() (Config, error) {
 	cfg.Mode = *mode
 	cfg.Interface = *iface
 	cfg.Rate = *rate
-	cfg.JSON = *json
 	cfg.Verbose = *verbose
 	cfg.Window = *window
 	cfg.MinSamples = *minSamples
