@@ -8,9 +8,16 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type connectPidInfo struct {
+	_    structs.HostLayout
+	Pid  uint32
+	Comm [16]int8
+}
 
 // loadConnect returns the embedded CollectionSpec for connect.
 func loadConnect() (*ebpf.CollectionSpec, error) {
@@ -54,14 +61,17 @@ type connectSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type connectProgramSpecs struct {
-	KprobeTcpConnect *ebpf.ProgramSpec `ebpf:"kprobe_tcp_connect"`
+	InetCskAccept *ebpf.ProgramSpec `ebpf:"inet_csk_accept"`
+	TcpClose      *ebpf.ProgramSpec `ebpf:"tcp_close"`
+	TcpConnect    *ebpf.ProgramSpec `ebpf:"tcp_connect"`
 }
 
 // connectMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type connectMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
+	Events     *ebpf.MapSpec `ebpf:"events"`
+	PidByInode *ebpf.MapSpec `ebpf:"pid_by_inode"`
 }
 
 // connectVariableSpecs contains global variables before they are loaded into the kernel.
@@ -90,12 +100,14 @@ func (o *connectObjects) Close() error {
 //
 // It can be passed to loadConnectObjects or ebpf.CollectionSpec.LoadAndAssign.
 type connectMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
+	Events     *ebpf.Map `ebpf:"events"`
+	PidByInode *ebpf.Map `ebpf:"pid_by_inode"`
 }
 
 func (m *connectMaps) Close() error {
 	return _ConnectClose(
 		m.Events,
+		m.PidByInode,
 	)
 }
 
@@ -109,12 +121,16 @@ type connectVariables struct {
 //
 // It can be passed to loadConnectObjects or ebpf.CollectionSpec.LoadAndAssign.
 type connectPrograms struct {
-	KprobeTcpConnect *ebpf.Program `ebpf:"kprobe_tcp_connect"`
+	InetCskAccept *ebpf.Program `ebpf:"inet_csk_accept"`
+	TcpClose      *ebpf.Program `ebpf:"tcp_close"`
+	TcpConnect    *ebpf.Program `ebpf:"tcp_connect"`
 }
 
 func (p *connectPrograms) Close() error {
 	return _ConnectClose(
-		p.KprobeTcpConnect,
+		p.InetCskAccept,
+		p.TcpClose,
+		p.TcpConnect,
 	)
 }
 
