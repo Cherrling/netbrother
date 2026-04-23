@@ -17,7 +17,6 @@ import (
 	"github.com/netbrother/netbrother/internal/types"
 )
 
-// ANSI escape codes for terminal control.
 const (
 	ansiClearScreen = "\033[2J"
 	ansiHome        = "\033[H"
@@ -50,6 +49,10 @@ type tuiDisplayer struct {
 	done         chan struct{}
 	captureMode  string
 	rawTerminal  bool
+
+	// filter state — accessed only from the main goroutine
+	filterMode bool
+	filterBuf  strings.Builder
 }
 
 func newTUDisplay() (*tuiDisplayer, error) {
@@ -95,25 +98,41 @@ func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 	}
 	defer t.restoreTerminal()
 
-	// Handle terminal signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGWINCH)
 	defer signal.Stop(sigCh)
 
-	// Keyboard input in a separate goroutine
-	inputCh := make(chan rune, 10)
-	go t.readInput(inputCh)
+	// Single input goroutine — sends EVERY byte as a uint32 rune.
+	inputCh := make(chan rune, 64)
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil || n == 0 {
+				close(inputCh)
+				return
+			}
+			inputCh <- rune(buf[0])
+		}
+	}()
 
-	// Hide cursor
 	fmt.Fprint(os.Stderr, ansiHideCursor)
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	// Initial render
 	t.render()
 
 	for {
+		// If we are in filter mode, only process input — don't select other
+		// channels so that keystrokes aren't stolen by other cases.
+		if t.filterMode {
+			if !t.handleFilterInput(inputCh) {
+				return nil
+			}
+			continue
+		}
+
 		select {
 		case <-ctx.Done():
 			fmt.Fprint(os.Stderr, ansiShowCursor)
@@ -130,75 +149,74 @@ func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 			t.handleEvent(evt)
 		case <-ticker.C:
 			t.render()
-		case r := <-inputCh:
-			switch {
-			case r == 'q' || r == 'Q':
-				fmt.Fprint(os.Stderr, ansiShowCursor)
+		case r, ok := <-inputCh:
+			if !ok {
 				return nil
-			case r == 'a' || r == 'A':
-				t.mu.Lock()
-				t.showAlerts = !t.showAlerts
-				t.mu.Unlock()
-				t.render()
-			case r == '/':
-				t.mu.Lock()
-				t.filter = ""
-				t.mu.Unlock()
-				t.promptFilter()
 			}
+			t.handleCommand(r)
 		}
 	}
 }
 
-func (t *tuiDisplayer) readInput(ch chan<- rune) {
-	buf := make([]byte, 1)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil || n == 0 {
-			return
+// handleFilterInput processes one filter-mode keystroke.
+// Returns false if the program should exit.
+func (t *tuiDisplayer) handleFilterInput(inputCh chan rune) bool {
+	select {
+	case r, ok := <-inputCh:
+		if !ok {
+			return false
 		}
-		r := rune(buf[0])
-		if r == 'q' || r == 'Q' || r == 'a' || r == 'A' || r == '/' || r == '\n' || r == '\r' || r == '\b' || r == 0x7f {
-			select {
-			case ch <- r:
-			default:
-			}
+		switch {
+		case r == '\n' || r == '\r':
+			t.filter = t.filterBuf.String()
+			t.filterBuf.Reset()
+			t.filterMode = false
+			t.render()
+		case (r == '\b' || r == 0x7f) && t.filterBuf.Len() > 0:
+			s := t.filterBuf.String()
+			t.filterBuf.Reset()
+			t.filterBuf.WriteString(s[:len(s)-1])
+			t.showFilterPrompt()
+		case unicode.IsPrint(r):
+			t.filterBuf.WriteRune(r)
+			t.showFilterPrompt()
+		case r == 'q' || r == 'Q':
+			return false
 		}
+	default:
+		// no input available — briefly yield so the select in Start() can
+		// pick up events, ticks, etc.
+		// We use a tiny sleep to avoid busy looping.
+		time.Sleep(50 * time.Millisecond)
 	}
+	return true
 }
 
-func (t *tuiDisplayer) promptFilter() {
+func (t *tuiDisplayer) showFilterPrompt() {
 	fmt.Fprintf(os.Stderr, "\033[%d;1H", t.terminalHeight())
 	fmt.Fprintf(os.Stderr, "\033[K")
-	fmt.Fprintf(os.Stderr, "Filter: ")
+	fmt.Fprintf(os.Stderr, "Filter: %s", t.filterBuf.String())
+}
 
-	var filter strings.Builder
-	buf := make([]byte, 1)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil || n == 0 {
-			return
-		}
-		r := rune(buf[0])
-		if r == '\n' || r == '\r' {
-			break
-		}
-		if (r == '\b' || r == 0x7f) && filter.Len() > 0 {
-			s := filter.String()
-			filter.Reset()
-			filter.WriteString(s[:len(s)-1])
-		} else if unicode.IsPrint(r) {
-			filter.WriteRune(r)
-		}
-		fmt.Fprintf(os.Stderr, "\033[%d;1H", t.terminalHeight())
-		fmt.Fprintf(os.Stderr, "\033[K")
-		fmt.Fprintf(os.Stderr, "Filter: %s", filter.String())
+func (t *tuiDisplayer) handleCommand(r rune) {
+	switch {
+	case r == 'q' || r == 'Q':
+		fmt.Fprint(os.Stderr, ansiShowCursor)
+		t.running = false
+		close(t.done)
+	case r == 'a' || r == 'A':
+		t.mu.Lock()
+		t.showAlerts = !t.showAlerts
+		t.mu.Unlock()
+		t.render()
+	case r == '/':
+		t.mu.Lock()
+		t.filter = ""
+		t.mu.Unlock()
+		t.filterBuf.Reset()
+		t.filterMode = true
+		t.showFilterPrompt()
 	}
-
-	t.mu.Lock()
-	t.filter = filter.String()
-	t.mu.Unlock()
-	t.render()
 }
 
 func (t *tuiDisplayer) handleEvent(evt capture.Event) {
@@ -237,7 +255,6 @@ func (t *tuiDisplayer) render() {
 	height := t.terminalHeight()
 
 	out := &strings.Builder{}
-
 	out.WriteString(ansiClearScreen)
 	out.WriteString(ansiHome)
 
@@ -261,13 +278,11 @@ func (t *tuiDisplayer) render() {
 func (t *tuiDisplayer) renderHeader(out *strings.Builder, width int) {
 	title := fmt.Sprintf(" netbrother | mode: proc | conns: %d | alerts: %d ",
 		len(t.connections), len(t.alerts))
-
 	if len(title) < width {
 		title += strings.Repeat(" ", width-len(title))
 	} else if len(title) > width {
 		title = title[:width]
 	}
-
 	out.WriteString(ansiBold)
 	out.WriteString(ansiWhite)
 	out.WriteString(ansiBlueBg)
@@ -287,8 +302,7 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int)
 	out.WriteString(ansiReset)
 	out.WriteString("\n")
 
-	divider := strings.Repeat("-", width)
-	out.WriteString(divider)
+	out.WriteString(strings.Repeat("-", width))
 	out.WriteString("\n")
 
 	conns := t.filteredConnections()
@@ -314,10 +328,8 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int)
 			alertMarker = ansiRed + " ***" + ansiReset
 		}
 
-		stateStr := c.State.String()
-
 		line := fmt.Sprintf(" %5s %-10s %-21s %-21s %-7s %s",
-			pidStr, procName, localAddr, remoteAddr, stateStr, alertMarker)
+			pidStr, procName, localAddr, remoteAddr, c.State.String(), alertMarker)
 
 		if len(line) > width {
 			line = line[:width]
@@ -336,14 +348,12 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int)
 
 func (t *tuiDisplayer) renderAlerts(out *strings.Builder, width int, maxRows int) {
 	out.WriteString("\n")
-	header := " ALERTS:"
 	out.WriteString(ansiBold)
-	out.WriteString(header)
+	out.WriteString(" ALERTS:")
 	out.WriteString(ansiReset)
 	out.WriteString("\n")
 
-	divider := strings.Repeat("-", width)
-	out.WriteString(divider)
+	out.WriteString(strings.Repeat("-", width))
 	out.WriteString("\n")
 
 	alerts := t.alerts
