@@ -1,4 +1,4 @@
-//go:build !nopcap
+//go:build pcap
 
 package capture
 
