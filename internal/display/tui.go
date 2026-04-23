@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unsafe"
 
 	"github.com/netbrother/netbrother/internal/capture"
 	"github.com/netbrother/netbrother/internal/types"
@@ -37,6 +38,13 @@ const (
 	ansiBlueBg   = "\033[44m"
 )
 
+type winsize struct {
+	Row    uint16
+	Col    uint16
+	Xpixel uint16
+	Ypixel uint16
+}
+
 type tuiDisplayer struct {
 	mu           sync.Mutex
 	connections  []types.Connection
@@ -47,20 +55,38 @@ type tuiDisplayer struct {
 	maxConns     int
 	running      bool
 	done         chan struct{}
-	captureMode  string
 	rawTerminal  bool
 
-	// filter state — accessed only from the main goroutine
+	// filter state
 	filterMode bool
 	filterBuf  strings.Builder
+
+	// terminal dimensions (updated on SIGWINCH)
+	termWidth  int
+	termHeight int
+
+	// scroll offset
+	scroll int
 }
 
 func newTUDisplay() (*tuiDisplayer, error) {
+	w, h := getTermSize()
 	return &tuiDisplayer{
-		maxAlerts: 100,
-		maxConns:  500,
-		done:      make(chan struct{}),
+		maxAlerts:   100,
+		maxConns:    500,
+		done:        make(chan struct{}),
+		termWidth:   w,
+		termHeight:  h,
 	}, nil
+}
+
+func getTermSize() (width, height int) {
+	ws := &winsize{}
+	ret, _, _ := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), 0x5413 /* TIOCGWINSZ */, uintptr(unsafe.Pointer(ws)))
+	if ret == 0 && ws.Col > 0 && ws.Row > 0 {
+		return int(ws.Col), int(ws.Row)
+	}
+	return 80, 24
 }
 
 func (t *tuiDisplayer) Close() error {
@@ -102,7 +128,6 @@ func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 	signal.Notify(sigCh, syscall.SIGWINCH)
 	defer signal.Stop(sigCh)
 
-	// Single input goroutine — sends EVERY byte as a uint32 rune.
 	inputCh := make(chan rune, 64)
 	go func() {
 		buf := make([]byte, 1)
@@ -124,8 +149,6 @@ func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 	t.render()
 
 	for {
-		// If we are in filter mode, only process input — don't select other
-		// channels so that keystrokes aren't stolen by other cases.
 		if t.filterMode {
 			if !t.handleFilterInput(inputCh) {
 				return nil
@@ -141,6 +164,7 @@ func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 			fmt.Fprint(os.Stderr, ansiShowCursor)
 			return nil
 		case <-sigCh:
+			t.termWidth, t.termHeight = getTermSize()
 			t.render()
 		case evt, ok := <-events:
 			if !ok {
@@ -158,8 +182,6 @@ func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 	}
 }
 
-// handleFilterInput processes one filter-mode keystroke.
-// Returns false if the program should exit.
 func (t *tuiDisplayer) handleFilterInput(inputCh chan rune) bool {
 	select {
 	case r, ok := <-inputCh:
@@ -171,6 +193,7 @@ func (t *tuiDisplayer) handleFilterInput(inputCh chan rune) bool {
 			t.filter = t.filterBuf.String()
 			t.filterBuf.Reset()
 			t.filterMode = false
+			t.scroll = 0
 			t.render()
 		case (r == '\b' || r == 0x7f) && t.filterBuf.Len() > 0:
 			s := t.filterBuf.String()
@@ -182,18 +205,19 @@ func (t *tuiDisplayer) handleFilterInput(inputCh chan rune) bool {
 			t.showFilterPrompt()
 		case r == 'q' || r == 'Q':
 			return false
+		case r == 0x1b: // ESC — cancel filter
+			t.filterBuf.Reset()
+			t.filterMode = false
+			t.render()
 		}
 	default:
-		// no input available — briefly yield so the select in Start() can
-		// pick up events, ticks, etc.
-		// We use a tiny sleep to avoid busy looping.
 		time.Sleep(50 * time.Millisecond)
 	}
 	return true
 }
 
 func (t *tuiDisplayer) showFilterPrompt() {
-	fmt.Fprintf(os.Stderr, "\033[%d;1H", t.terminalHeight())
+	fmt.Fprintf(os.Stderr, "\033[%d;1H", t.termHeight)
 	fmt.Fprintf(os.Stderr, "\033[K")
 	fmt.Fprintf(os.Stderr, "Filter: %s", t.filterBuf.String())
 }
@@ -216,6 +240,20 @@ func (t *tuiDisplayer) handleCommand(r rune) {
 		t.filterBuf.Reset()
 		t.filterMode = true
 		t.showFilterPrompt()
+	case r == 'j' || r == 'J':
+		t.scroll++
+		t.render()
+	case r == 'k' || r == 'K':
+		if t.scroll > 0 {
+			t.scroll--
+		}
+		t.render()
+	case r == 'g':
+		t.scroll = 0
+		t.render()
+	case r == 'G':
+		t.scroll = t.maxScroll()
+		t.render()
 	}
 }
 
@@ -247,41 +285,64 @@ func (t *tuiDisplayer) handleEvent(evt capture.Event) {
 	}
 }
 
+func (t *tuiDisplayer) maxScroll() int {
+	t.mu.Lock()
+	total := len(t.filteredConnections())
+	t.mu.Unlock()
+	rows := t.visibleRows()
+	if total <= rows {
+		return 0
+	}
+	return total - rows
+}
+
+func (t *tuiDisplayer) visibleRows() int {
+	rows := t.termHeight - 4 // header(1) + header line(1) + divider(1) + status(1)
+	if t.showAlerts {
+		rows = t.termHeight/2 - 4
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
 func (t *tuiDisplayer) render() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	width := t.terminalWidth()
-	height := t.terminalHeight()
 
 	out := &strings.Builder{}
 	out.WriteString(ansiClearScreen)
 	out.WriteString(ansiHome)
 
-	t.renderHeader(out, width)
+	t.renderHeader(out)
 
-	tableHeight := height - 5
-	if t.showAlerts {
-		tableHeight = height / 2
-	}
-	t.renderTable(out, width, tableHeight)
+	rows := t.visibleRows()
+	t.renderTable(out, rows)
 
 	if t.showAlerts {
-		t.renderAlerts(out, width, height-tableHeight-2)
+		alertRows := t.termHeight/2 - 2
+		t.renderAlerts(out, alertRows)
 	}
 
-	t.renderStatusBar(out, width)
+	t.renderStatusBar(out)
 
 	fmt.Fprint(os.Stderr, out.String())
 }
 
-func (t *tuiDisplayer) renderHeader(out *strings.Builder, width int) {
-	title := fmt.Sprintf(" netbrother | mode: proc | conns: %d | alerts: %d ",
-		len(t.connections), len(t.alerts))
-	if len(title) < width {
-		title += strings.Repeat(" ", width-len(title))
-	} else if len(title) > width {
-		title = title[:width]
+func (t *tuiDisplayer) renderHeader(out *strings.Builder) {
+	total := len(t.connections)
+	filtered := len(t.filteredConnections())
+	title := fmt.Sprintf(" netbrother | conns: %d", total)
+	if t.filter != "" {
+		title += fmt.Sprintf(" (filtered: %d)", filtered)
+	}
+	title += fmt.Sprintf(" | alerts: %d ", len(t.alerts))
+
+	if len(title) < t.termWidth {
+		title += strings.Repeat(" ", t.termWidth-len(title))
+	} else if len(title) > t.termWidth {
+		title = title[:t.termWidth]
 	}
 	out.WriteString(ansiBold)
 	out.WriteString(ansiWhite)
@@ -291,26 +352,35 @@ func (t *tuiDisplayer) renderHeader(out *strings.Builder, width int) {
 	out.WriteString("\n")
 }
 
-func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int) {
-	header := fmt.Sprintf(" %-5s %-10s %-21s %-21s %-7s %s",
-		"PID", "PROC", "LOCAL", "REMOTE", "STATE", "ALERT")
-	if len(header) > width {
-		header = header[:width]
-	}
+func (t *tuiDisplayer) renderTable(out *strings.Builder, maxRows int) {
+	header := fmt.Sprintf(" %-5s %-12s %-21s %-21s %-8s",
+		"PID", "PROC", "LOCAL", "REMOTE", "STATE")
 	out.WriteString(ansiBold)
 	out.WriteString(header)
 	out.WriteString(ansiReset)
 	out.WriteString("\n")
 
-	out.WriteString(strings.Repeat("-", width))
+	out.WriteString(strings.Repeat("-", t.termWidth))
 	out.WriteString("\n")
 
 	conns := t.filteredConnections()
+
+	// Clamp scroll to valid range
+	maxScroll := 0
 	if len(conns) > maxRows {
-		conns = conns[:maxRows]
+		maxScroll = len(conns) - maxRows
+	}
+	if t.scroll > maxScroll {
+		t.scroll = maxScroll
 	}
 
-	for _, c := range conns {
+	start := t.scroll
+	end := start + maxRows
+	if end > len(conns) {
+		end = len(conns)
+	}
+
+	for _, c := range conns[start:end] {
 		hasAlert := t.hasAlertForConn(c)
 		pidStr := fmt.Sprintf("%d", c.PID)
 		if c.PID == 0 {
@@ -322,17 +392,18 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int)
 		}
 		localAddr := fmt.Sprintf("%s:%d", c.LocalIP, c.LocalPort)
 		remoteAddr := fmt.Sprintf("%s:%d", c.RemoteIP, c.RemotePort)
+		stateStr := c.State.String()
 
 		alertMarker := ""
 		if hasAlert {
 			alertMarker = ansiRed + " ***" + ansiReset
 		}
 
-		line := fmt.Sprintf(" %5s %-10s %-21s %-21s %-7s %s",
-			pidStr, procName, localAddr, remoteAddr, c.State.String(), alertMarker)
+		line := fmt.Sprintf(" %5s %-12s %-21s %-21s %-8s%s",
+			pidStr, procName, localAddr, remoteAddr, stateStr, alertMarker)
 
-		if len(line) > width {
-			line = line[:width]
+		if len(line) > t.termWidth {
+			line = line[:t.termWidth]
 		}
 
 		if hasAlert {
@@ -344,16 +415,36 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int)
 		}
 		out.WriteString("\n")
 	}
+
+	// Show scroll indicator
+	if len(conns) > maxRows {
+		pct := 0
+		if len(conns) > 0 {
+			pct = (t.scroll + maxRows) * 100 / len(conns)
+			if pct > 100 {
+				pct = 100
+			}
+		}
+		indicator := fmt.Sprintf(" %d/%d connections (%d%%)  [j] down  [k] up  [g] top  [G] bottom",
+			end, len(conns), pct)
+		if len(indicator) > t.termWidth {
+			indicator = indicator[:t.termWidth]
+		}
+		out.WriteString(ansiCyan)
+		out.WriteString(indicator)
+		out.WriteString(ansiReset)
+		out.WriteString("\n")
+	}
 }
 
-func (t *tuiDisplayer) renderAlerts(out *strings.Builder, width int, maxRows int) {
+func (t *tuiDisplayer) renderAlerts(out *strings.Builder, maxRows int) {
 	out.WriteString("\n")
 	out.WriteString(ansiBold)
 	out.WriteString(" ALERTS:")
 	out.WriteString(ansiReset)
 	out.WriteString("\n")
 
-	out.WriteString(strings.Repeat("-", width))
+	out.WriteString(strings.Repeat("-", t.termWidth))
 	out.WriteString("\n")
 
 	alerts := t.alerts
@@ -371,21 +462,24 @@ func (t *tuiDisplayer) renderAlerts(out *strings.Builder, width int, maxRows int
 
 		line := fmt.Sprintf(" [%s%s%s] %s",
 			severityColor, a.Severity.String(), ansiReset, a.Message)
-		if len(line) > width {
-			line = line[:width]
+		if len(line) > t.termWidth {
+			line = line[:t.termWidth]
 		}
 		out.WriteString(line)
 		out.WriteString("\n")
 	}
 }
 
-func (t *tuiDisplayer) renderStatusBar(out *strings.Builder, width int) {
-	out.WriteString("\n")
-	hint := "[q] quit  [/] filter  [a] toggle alerts"
-	if len(hint) > width {
-		hint = hint[:width]
+func (t *tuiDisplayer) renderStatusBar(out *strings.Builder) {
+	conns := t.filteredConnections()
+	hint := "[q] quit  [/] filter  [j/k] scroll  [a] alerts"
+	if len(conns) > t.visibleRows() {
+		hint = "[q] quit  [/] filter  [j/k] scroll  [g/G] top/bottom  [a] alerts"
+	}
+	if len(hint) > t.termWidth {
+		hint = hint[:t.termWidth]
 	} else {
-		hint += strings.Repeat(" ", width-len(hint))
+		hint += strings.Repeat(" ", t.termWidth-len(hint))
 	}
 	out.WriteString(ansiCyan)
 	out.WriteString(hint)
@@ -423,12 +517,4 @@ func (t *tuiDisplayer) hasAlertForConn(c types.Connection) bool {
 		}
 	}
 	return false
-}
-
-func (t *tuiDisplayer) terminalWidth() int {
-	return 80
-}
-
-func (t *tuiDisplayer) terminalHeight() int {
-	return 24
 }
