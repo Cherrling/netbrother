@@ -24,7 +24,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 	if cfg.ShowVersion {
-		fmt.Println(version)
+		fmt.Printf("%s\nbackends: %v\n", version, capture.AvailableBackends())
 		os.Exit(0)
 	}
 
