@@ -1,41 +1,41 @@
 # netbrother
 
-A real-time network connection monitor for Linux, designed for CTF competitions and malware analysis. Tracks every TCP connection at the process level and automatically detects suspicious behavior — periodic beacons, unknown processes, connections to suspicious ports/IPs.
+实时网络连接监控工具，专为 CTF 竞赛和恶意软件分析设计。在进程级别跟踪每个 TCP 连接，自动检测可疑行为——周期性回连、未知进程、连接可疑端口/IP。
 
-## Quick start
+## 快速开始
 
 ```bash
-# Build (pure Go, no dependencies)
+# 构建（纯 Go，无外部依赖）
 make build
 
-# Run TUI (default)
+# 运行 TUI（默认）
 sudo ./netbrother
 
-# Or log mode (scrolls to stdout)
+# 或日志模式（滚动输出到 stdout）
 ./netbrother -mode log
 
-# Save all connections to a file
+# 保存所有连接到文件
 ./netbrother -output connections.txt
 ```
 
-## Features
+## 功能特性
 
-### Process-level connection monitoring
-- Reads `/proc/net/tcp` + `/proc/<pid>/fd/` — no kernel modules, no dependencies
-- Resolves PID, process name, and executable path for every connection
-- Inode-to-PID cache survives TIME_WAIT (remembers PIDs even after the process closes the socket)
+### 进程级连接监控
+- 读取 `/proc/net/tcp` + `/proc/<pid>/fd/`——无需内核模块，无需依赖
+- 为每个连接解析 PID、进程名和可执行文件路径
+- inode 到 PID 缓存可跨越 TIME_WAIT（即使进程关闭 socket 后仍能记住 PID）
 
-### Three detection engines
+### 三种检测引擎
 
-| Detection | Description | Severity |
+| 检测 | 描述 | 严重级别 |
 |---|---|---|
-| **Periodic beacon** | Detects connections at regular intervals (CV analysis on inter-arrival times) | HIGH |
-| **New process** | Alerts when a never-before-seen process makes a connection | MED |
-| **Suspicious port/IP** | Flags connections to known C2 ports (4444, 1337, 31337, 6660-6669, etc.) | MED/HIGH |
+| **周期性回连** | 检测按固定间隔发起的连接（对到达间隔进行变异系数分析） | 高 |
+| **新进程** | 当从未见过的进程发起连接时告警 | 中 |
+| **可疑端口/IP** | 标记连接到已知 C2 端口（4444、1337、31337、6660-6669 等） | 中/高 |
 
-### Dual display modes
+### 双显示模式
 
-**TUI mode** (`-mode tui`): Real-time dashboard with keyboard controls
+**TUI 模式**（`-mode tui`）：实时仪表盘，支持键盘控制
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -47,11 +47,11 @@ sudo ./netbrother
 │ 3364243  │ sshd-session       │ 100.118.229.103:22   │ 100....  │
 │ 3929881  │ claude             │ 192.168.9.107:40764  │ 116....  │
 ├──────────┴────────────────────┴──────────────────────┴──────────┤
-│ [q] quit  [/] filter  [j/k/arrows] scroll  [a] alerts  [t] tw  │
+│ [q] 退出  [/] 过滤  [j/k/方向键] 滚动  [a] 告警  [t] timewait    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Log mode** (`-mode log`): Scrolls new connections as they appear
+**日志模式**（`-mode log`）：新连接出现时滚动输出
 
 ```
 LOCAL                   REMOTE                  PID       PROC                  EXE
@@ -61,102 +61,102 @@ LOCAL                   REMOTE                  PID       PROC                  
 127.0.0.1:36690         127.0.0.1:9100          2253      prometheus            /opt/grafana/prometheus/prometheus
 ```
 
-### Output file
-Use `-output <file>` to save every unique connection to a file (same table format, deduplicated).
+### 输出文件
+使用 `-output <file>` 可将每个唯一连接保存到文件（相同表格格式，已去重）。
 
-## Usage
+## 使用方法
 
 ```
 netbrother [flags]
 ```
 
-| Flag | Default | Description |
+| 参数 | 默认值 | 描述 |
 |---|---|---|
-| `-mode` | `tui` | Display mode: `tui` or `log` |
-| `-i` | `eth0` | Network interface (for pcap mode) |
-| `-rate` | `1s` | Polling interval for /proc mode |
-| `-keep` | `false` | Keep closed connections visible in TUI (marked as CLOSE) |
-| `-show-time-wait` | `false` | Show TIME_WAIT connections (hidden by default) |
-| `-output` | `""` | Save all unique connections to file (table format) |
-| `-bad-ports` | see below | Extra port ranges to flag (e.g. `4444,1337,6660-6669`) |
-| `-bad-ips` | `""` | CIDR ranges to flag (e.g. `10.0.0.0/8`) |
-| `-window` | `5m` | Sliding window for periodic beacon detection |
-| `-min-samples` | `3` | Minimum samples before beacon detection activates |
-| `-cv-threshold` | `0.25` | Max coefficient of variation for beacon detection |
-| `-v` | `false` | Verbose logging (shows capture backend) |
-| `-version` | `false` | Print version and exit |
+| `-mode` | `tui` | 显示模式：`tui` 或 `log` |
+| `-i` | `eth0` | 网络接口（pcap 模式使用） |
+| `-rate` | `1s` | /proc 模式轮询间隔 |
+| `-keep` | `false` | 在 TUI 中保留已关闭的连接（标记为 CLOSE） |
+| `-show-time-wait` | `false` | 显示 TIME_WAIT 连接（默认隐藏） |
+| `-output` | `""` | 将所有唯一连接保存到文件（表格格式） |
+| `-bad-ports` | 见下方 | 额外的可疑端口范围（如 `4444,1337,6660-6669`） |
+| `-bad-ips` | `""` | 要标记的 CIDR 范围（如 `10.0.0.0/8`） |
+| `-window` | `5m` | 周期性回连检测的滑动窗口 |
+| `-min-samples` | `3` | 周期性检测激活前的最小样本数 |
+| `-cv-threshold` | `0.25` | 回连检测的变异系数阈值 |
+| `-v` | `false` | 详细日志输出 |
+| `-version` | `false` | 打印版本号并退出 |
 
-Default suspicious ports: `4444, 1337, 31337, 6660-6669, 5555, 7777, 8888, 9999`
+默认可疑端口：`4444, 1337, 31337, 6660-6669, 5555, 7777, 8888, 9999`
 
-## TUI key bindings
+## TUI 键盘快捷键
 
-| Key | Action |
+| 按键 | 操作 |
 |---|---|
-| `q` | Quit |
-| `j` / `↓` | Scroll down |
-| `k` / `↑` | Scroll up |
-| `g` | Jump to top |
-| `G` | Jump to bottom |
-| `/` | Filter (by process name, remote IP, port, or PID) |
-| `a` | Toggle alerts panel |
-| `t` | Toggle TIME_WAIT visibility |
-| `ESC` | Cancel filter |
+| `q` | 退出 |
+| `j` / `↓` | 向下滚动 |
+| `k` / `↑` | 向上滚动 |
+| `g` | 跳至顶部 |
+| `G` | 跳至底部 |
+| `/` | 过滤（按进程名、远程 IP、端口或 PID） |
+| `a` | 切换告警面板 |
+| `t` | 切换 TIME_WAIT 可见性 |
+| `ESC` | 取消过滤 |
 
-## Build
+## 构建
 
 ```bash
-# Pure Go build (recommended, no CGO needed)
+# 纯 Go 构建（推荐，无需 CGO）
 make build
 
-# With pcap support (requires libpcap-dev)
+# 带 pcap 支持（需要 libpcap-dev）
 make build-pcap
 
-# Static build with pcap
+# 带 pcap 的静态构建
 make build-static
 ```
 
-The default build uses `/proc` capture (zero dependencies, always works). The pcap build adds libpcap-based packet capture (requires root, needs `libpcap-dev`).
+默认构建使用 `/proc` 抓取（零依赖，始终可用）。pcap 构建添加了基于 libpcap 的数据包抓取（需要 root，需安装 `libpcap-dev`）。
 
-## Detection details
+## 检测原理
 
-### Periodic beacon detection
-Tracks the interval between consecutive connections from the same (PID, RemoteIP, RemotePort). Uses the coefficient of variation (CV = stddev/mean) to measure regularity. CV ≤ 0.25 means the connection pattern is regular enough to be suspicious.
+### 周期性回连检测
+跟踪同一 (PID, RemoteIP, RemotePort) 连续连接之间的间隔。使用变异系数（CV = 标准差/均值）衡量规律性。CV ≤ 0.25 表示连接模式足够规律，值得怀疑。
 
-Example alert: `PID 1234 (nc) -> 10.0.0.5:4444 every ~30s (CV=0.12)`
+告警示例：`PID 1234 (nc) -> 10.0.0.5:4444 每 ~30s 连接一次 (CV=0.12)`
 
-### New process detection
-Maintains a set of seen PIDs and connection keys. The first connection from a new process triggers an alert, which helps catch short-lived processes that spawn and connect before you can inspect them.
+### 新进程检测
+维护已见过的 PID 和连接键集合。新进程的首次连接触发告警，有助于捕获那些短暂启动、连接后迅速退出的进程。
 
-### Suspicious port/IP detection
-Flags connections to known C2/backdoor ports and any user-specified CIDR ranges. Useful for quickly spotting reverse shells and beacon traffic.
+### 可疑端口/IP 检测
+标记连接到已知 C2/后门端口以及用户指定的 CIDR 范围。有助于快速发现反弹 shell 和回连流量。
 
-## Examples
+## 示例
 
 ```bash
-# Monitor in TUI, keeping closed connections visible
+# 在 TUI 中监控，保留已关闭连接
 sudo ./netbrother -keep
 
-# Scroll to stdout, save everything to a file
+# 滚动输出到 stdout，同时保存到文件
 ./netbrother -mode log -output connections.txt
 
-# Show TIME_WAIT connections too
+# 同时显示 TIME_WAIT 连接
 ./netbrother -show-time-wait
 
-# Flag custom bad ports
+# 自定义可疑端口
 ./netbrother -bad-ports "4444,1337,6660-6669,9001"
 
-# Flag connections to a suspicious subnet
+# 标记连接到可疑子网
 sudo ./netbrother -bad-ips "10.0.0.0/8,192.168.0.0/16"
 
-# Simulate a beacon to test detection:
-# (in another terminal)
+# 模拟回连以测试检测：
+# （在另一个终端中运行）
 while true; do nc -z example.com 80; sleep 5; done
 ```
 
-## How it works
+## 工作原理
 
-1. **Capture**: Reads `/proc/net/tcp` for all TCP connections and `/proc/<pid>/fd/` to map socket inodes to PIDs
-2. **Detect**: Runs three detection engines against each new connection
-3. **Display**: Renders in TUI or log mode, optionally writes to file
+1. **抓取**：读取 `/proc/net/tcp` 获取所有 TCP 连接，读取 `/proc/<pid>/fd/` 将 socket inode 映射到 PID
+2. **检测**：对每个新连接运行三种检测引擎
+3. **显示**：在 TUI 或日志模式中渲染，可选写入文件
 
-No kernel modules, no BPF, no packet capture required (unless you build with pcap).
+无需内核模块，无需 BPF，无需数据包抓取（除非使用 pcap 构建）。
