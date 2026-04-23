@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sort"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"syscall"
 	"time"
 	"unicode"
-	"unsafe"
 
 	"github.com/netbrother/netbrother/internal/capture"
 	"github.com/netbrother/netbrother/internal/types"
@@ -38,48 +38,6 @@ const (
 	ansiBlueBg   = "\033[44m"
 )
 
-// termios mirrors the Linux termios struct for raw mode terminal I/O.
-type termios struct {
-	Iflag  uint32
-	Oflag  uint32
-	Cflag  uint32
-	Lflag  uint32
-	Cc     [20]byte
-	Ispeed uint32
-	Ospeed uint32
-}
-
-const (
-	tcgets  = 0x5401
-	tcsets  = 0x5402
-	icanon  = 0x0002
-	echo    = 0x0008
-	vmint   = 6
-	vtime   = 7
-)
-
-func makeRaw(fd uintptr) (*termios, error) {
-	var orig termios
-	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, tcgets, uintptr(unsafe.Pointer(&orig))); err != 0 {
-		return nil, err
-	}
-	raw := orig
-	raw.Lflag &^= icanon | echo
-	raw.Cc[vtime] = 0  // no timeout
-	raw.Cc[vmint] = 1  // return as soon as 1 byte is available
-	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, tcsets, uintptr(unsafe.Pointer(&raw))); err != 0 {
-		return nil, err
-	}
-	return &orig, nil
-}
-
-func restoreTerm(fd uintptr, orig *termios) error {
-	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, tcsets, uintptr(unsafe.Pointer(orig))); err != 0 {
-		return err
-	}
-	return nil
-}
-
 type tuiDisplayer struct {
 	mu           sync.Mutex
 	connections  []types.Connection
@@ -91,14 +49,14 @@ type tuiDisplayer struct {
 	running      bool
 	done         chan struct{}
 	captureMode  string
-	origTermios  *termios
+	rawTerminal  bool
 }
 
 func newTUDisplay() (*tuiDisplayer, error) {
 	return &tuiDisplayer{
-		maxAlerts:  100,
-		maxConns:   500,
-		done:       make(chan struct{}),
+		maxAlerts: 100,
+		maxConns:  500,
+		done:      make(chan struct{}),
 	}, nil
 }
 
@@ -107,23 +65,35 @@ func (t *tuiDisplayer) Close() error {
 		close(t.done)
 	}
 	fmt.Fprint(os.Stderr, ansiShowCursor)
-	if t.origTermios != nil {
-		restoreTerm(os.Stdin.Fd(), t.origTermios)
-	}
+	t.restoreTerminal()
 	return nil
+}
+
+func (t *tuiDisplayer) setRawMode() error {
+	cmd := exec.Command("stty", "-icanon", "-echo", "min", "1", "time", "0")
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	t.rawTerminal = true
+	return nil
+}
+
+func (t *tuiDisplayer) restoreTerminal() {
+	if t.rawTerminal {
+		exec.Command("stty", "sane").Run()
+		t.rawTerminal = false
+	}
 }
 
 func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) error {
 	t.running = true
 	defer func() { t.running = false }()
 
-	// Switch terminal to raw mode so individual keypresses are delivered immediately
-	orig, err := makeRaw(os.Stdin.Fd())
-	if err != nil {
+	if err := t.setRawMode(); err != nil {
 		return fmt.Errorf("raw terminal: %w", err)
 	}
-	t.origTermios = orig
-	defer restoreTerm(os.Stdin.Fd(), orig)
+	defer t.restoreTerminal()
 
 	// Handle terminal signals
 	sigCh := make(chan os.Signal, 1)
@@ -152,7 +122,6 @@ func (t *tuiDisplayer) Start(ctx context.Context, events <-chan capture.Event) e
 			fmt.Fprint(os.Stderr, ansiShowCursor)
 			return nil
 		case <-sigCh:
-			// Terminal resized, re-render
 			t.render()
 		case evt, ok := <-events:
 			if !ok {
@@ -199,12 +168,10 @@ func (t *tuiDisplayer) readInput(ch chan<- rune) {
 }
 
 func (t *tuiDisplayer) promptFilter() {
-	// Show filter prompt at bottom
-	fmt.Fprintf(os.Stderr, "\033[%d;1H", t.terminalHeight()) // last line
-	fmt.Fprintf(os.Stderr, "\033[K")                          // clear line
+	fmt.Fprintf(os.Stderr, "\033[%d;1H", t.terminalHeight())
+	fmt.Fprintf(os.Stderr, "\033[K")
 	fmt.Fprintf(os.Stderr, "Filter: ")
 
-	// Read filter input (simple line-based)
 	var filter strings.Builder
 	buf := make([]byte, 1)
 	for {
@@ -245,7 +212,6 @@ func (t *tuiDisplayer) handleEvent(evt capture.Event) {
 			t.connections = t.connections[len(t.connections)-t.maxConns:]
 		}
 	case capture.EventConnectionClosed:
-		// Remove from active connections
 		key := evt.Connection.Key()
 		for i, c := range t.connections {
 			if c.Key() == key {
@@ -255,7 +221,6 @@ func (t *tuiDisplayer) handleEvent(evt capture.Event) {
 		}
 	}
 
-	// Add alerts
 	for _, a := range evt.Alerts {
 		t.alerts = append(t.alerts, a)
 		if len(t.alerts) > t.maxAlerts {
@@ -273,26 +238,21 @@ func (t *tuiDisplayer) render() {
 
 	out := &strings.Builder{}
 
-	// Clear screen and move home
 	out.WriteString(ansiClearScreen)
 	out.WriteString(ansiHome)
 
-	// Header bar
 	t.renderHeader(out, width)
 
-	// Connection table
 	tableHeight := height - 5
 	if t.showAlerts {
 		tableHeight = height / 2
 	}
 	t.renderTable(out, width, tableHeight)
 
-	// Alerts section
 	if t.showAlerts {
 		t.renderAlerts(out, width, height-tableHeight-2)
 	}
 
-	// Status bar
 	t.renderStatusBar(out, width)
 
 	fmt.Fprint(os.Stderr, out.String())
@@ -302,7 +262,6 @@ func (t *tuiDisplayer) renderHeader(out *strings.Builder, width int) {
 	title := fmt.Sprintf(" netbrother | mode: proc | conns: %d | alerts: %d ",
 		len(t.connections), len(t.alerts))
 
-	// Pad with spaces to fill width
 	if len(title) < width {
 		title += strings.Repeat(" ", width-len(title))
 	} else if len(title) > width {
@@ -318,7 +277,6 @@ func (t *tuiDisplayer) renderHeader(out *strings.Builder, width int) {
 }
 
 func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int) {
-	// Column headers
 	header := fmt.Sprintf(" %-5s %-10s %-21s %-21s %-7s %s",
 		"PID", "PROC", "LOCAL", "REMOTE", "STATE", "ALERT")
 	if len(header) > width {
@@ -329,12 +287,10 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int)
 	out.WriteString(ansiReset)
 	out.WriteString("\n")
 
-	// Divider
 	divider := strings.Repeat("-", width)
 	out.WriteString(divider)
 	out.WriteString("\n")
 
-	// Filter connections
 	conns := t.filteredConnections()
 	if len(conns) > maxRows {
 		conns = conns[:maxRows]
@@ -367,7 +323,6 @@ func (t *tuiDisplayer) renderTable(out *strings.Builder, width int, maxRows int)
 			line = line[:width]
 		}
 
-		// Color suspicious connections
 		if hasAlert {
 			out.WriteString(ansiYellow)
 			out.WriteString(line)
@@ -429,7 +384,6 @@ func (t *tuiDisplayer) renderStatusBar(out *strings.Builder, width int) {
 
 func (t *tuiDisplayer) filteredConnections() []types.Connection {
 	if t.filter == "" {
-		// Sort by PID for display
 		sorted := make([]types.Connection, len(t.connections))
 		copy(sorted, t.connections)
 		sort.Slice(sorted, func(i, j int) bool {
