@@ -17,13 +17,8 @@ jobs:
         target:
           - os: linux
             arch: amd64
-            ext: ""
           - os: linux
             arch: arm64
-            ext: ""
-          - os: windows
-            arch: amd64
-            ext: ".exe"
 
     steps:
       - uses: actions/checkout@v4
@@ -46,27 +41,20 @@ jobs:
 
       - name: Build binary
         run: |
-          BINARY="netbrother-${{ matrix.target.os }}-${{ matrix.target.arch }}${{ matrix.target.ext }}"
+          BINARY="netbrother-${{ matrix.target.os }}-${{ matrix.target.arch }}"
           CGO_ENABLED=0 GOOS=${{ matrix.target.os }} GOARCH=${{ matrix.target.arch }} \
             go build -ldflags "-X main.version=${{ steps.version.outputs.value }} -s -w" \
             -o "$BINARY" ./cmd/netbrother/
 
-      - name: Package (tar.gz)
-        if: matrix.target.os == 'linux'
+      - name: Package
         run: |
           BINARY="netbrother-${{ matrix.target.os }}-${{ matrix.target.arch }}"
           tar czf "${BINARY}.tar.gz" "${BINARY}"
 
-      - name: Package (zip)
-        if: matrix.target.os == 'windows'
-        run: |
-          BINARY="netbrother-${{ matrix.target.os }}-${{ matrix.target.arch }}.exe"
-          zip "${BINARY}.zip" "${BINARY}"
-
       - uses: actions/upload-artifact@v4
         with:
           name: netbrother-${{ matrix.target.os }}-${{ matrix.target.arch }}
-          path: netbrother-${{ matrix.target.os }}-${{ matrix.target.arch }}.*
+          path: netbrother-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz
 
   release:
     name: Create Release
@@ -103,5 +91,4 @@ jobs:
           files: |
             netbrother-linux-amd64.tar.gz
             netbrother-linux-arm64.tar.gz
-            netbrother-windows-amd64.zip
           generate_release_notes: true
